@@ -480,6 +480,58 @@
       margin: auto;
       border: 1.5px solid #e5e7eb;
     }
+
+    .note-row {
+      position: relative;
+      display: flex;
+      align-items: center;
+      min-height: 44px;
+      padding: 8px 14px 8px 44px;
+      border: 1.5px solid #e5e7eb;
+      font-size: 0.85rem;
+      color: #333;
+    }
+
+    .note-top {
+      border-radius: 8px 8px 0 0;
+      border-bottom: none;
+    }
+
+    .note-bottom {
+      border-radius: 0 0 8px 8px;
+      border-top: none;
+    }
+
+    .color-dot {
+      position: absolute;
+      left: 12px;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      border: 2px solid #d1d5db;
+      cursor: pointer;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+      flex-shrink: 0;
+    }
+
+    .color-dot:hover {
+      border-color: #4f46e5;
+    }
+
+    .note-text {
+      flex: 1;
+      outline: none;
+      min-height: 20px;
+      line-height: 1.4;
+      text-align: center;
+    }
+
+    .note-text:empty:before {
+      content: attr(data-placeholder);
+      color: #b0b0b0;
+    }
   </style>
 </head>
 
@@ -549,7 +601,8 @@
 
   <!-- عنصر مخفي لاختيار صورة المادة -->
   <input type="file" id="imgFileInput" accept="image/*" style="display:none">
-
+  <!-- عنصر مخفي لاختيار لون خلفية سطر الملاحظة -->
+  <input type="color" id="noteColorInput" style="display:none">
 
   <script>
     // ── دالة groupByCode (مضمّنة) ─────────────────────────────
@@ -569,11 +622,41 @@
     let activeItem = 0;
     let activeView = 'cards';
     // فروع تُستثنى من "مجموع كمية الإدخال" فقط (تبقى داخلة في مجموع المبيعات والرصيد)
-const EXCLUDED_INPUT_BRANCHES = ['Store BR', 'Main Branch','ادارة سلطنة عمان','STORE'];
+    const EXCLUDED_INPUT_BRANCHES = ['Store BR', 'Main Branch', 'ادارة سلطنة عمان', 'STORE'];
 
     // ── صور المواد (مخزّنة حسب كود المادة) ─────────────────────
     let itemImages = {};       // { [item.code]: dataURL }
     let pendingImageCode = null;
+
+    // ── ملاحظات الجدول (سطر أعلى الترويسة وسطر أسفل المجاميع) ──
+    let itemNotes = {};        // { [item.code]: { top:{text,color}, bottom:{text,color} } }
+    let pendingNoteTarget = null; // { code, pos }
+
+    function getNote(code, pos) {
+      if (!itemNotes[code]) {
+        itemNotes[code] = {
+          top: { text: '', color: '#ffffff' },
+          bottom: { text: '', color: '#ffffff' }
+        };
+      }
+      return itemNotes[code][pos];
+    }
+
+    function escapeHtml(str) {
+      return String(str ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+    }
+
+    function noteRowHtml(item, pos) {
+      const note = getNote(item.code, pos);
+      return `
+  <div class="note-row note-${pos}" data-code="${item.code}" data-pos="${pos}" style="background:${note.color}">
+    <span class="color-dot" data-code="${item.code}" data-pos="${pos}" style="background:${note.color}"></span>
+    <div class="note-text" contenteditable="true" data-code="${item.code}" data-pos="${pos}" data-placeholder="اكتب ملاحظة هنا...">${escapeHtml(note.text)}</div>
+  </div>`;
+    }
 
     // ── Run ───────────────────────────────────────────────────
     document.getElementById('btnRun').addEventListener('click', () => {
@@ -833,9 +916,9 @@ const EXCLUDED_INPUT_BRANCHES = ['Store BR', 'Main Branch','ادارة سلطن�
         // بسبب rowspan (كل فرع له صف واحد فقط في هذه المجاميع، بعكس صفوف المبيعات المتكررة)
         const totalBalance = item.branches.reduce((sum, b) => sum + (b.balance ?? 0), 0);
         const totalInputQty = item.branches
-  .filter(b => !EXCLUDED_INPUT_BRANCHES.includes(b.nameBranch))
-  .reduce((sum, b) =>
-    sum + (b.inputRows ?? []).reduce((s, r) => s + (r.inputQuantity ?? 0), 0), 0);
+          .filter(b => !EXCLUDED_INPUT_BRANCHES.includes(b.nameBranch))
+          .reduce((sum, b) =>
+            sum + (b.inputRows ?? []).reduce((s, r) => s + (r.inputQuantity ?? 0), 0), 0);
         const totalSalesQty = item.branches.reduce((sum, b) => sum + (b.totalSales ?? 0), 0);
 
         let bodyHtml = '';
@@ -910,23 +993,25 @@ const EXCLUDED_INPUT_BRANCHES = ['Store BR', 'Main Branch','ادارة سلطن�
 
         html += `
       <div class="item-table-wrap">
-        <table class="flat-table">
-          <thead>
-            <tr>
-              <th>صورة المادة</th>
-              <th>المادة</th>
-              <th>الفرع</th>
-              <th>كمية الإدخال</th>
-              <th>عدد المبيعات بهذا السعر</th>
-              <th>سعر المبيع</th>
-              <th>تاريخ أول دخول</th>
-              <th>تاريخ آخر مبيع</th>
-              <th>الرصيد</th>
-              <th>ملاحظة</th>
-            </tr>
-          </thead>
-          <tbody>${bodyHtml}</tbody>
-        </table>
+        ${noteRowHtml(item, 'top')}
+          <table class="flat-table">
+            <thead>
+              <tr>
+                <th>صورة المادة</th>
+                <th>المادة</th>
+                <th>الفرع</th>
+                <th>كمية الإدخال</th>
+                <th>عدد المبيعات بهذا السعر</th>
+                <th>سعر المبيع</th>
+                <th>تاريخ أول دخول</th>
+                <th>تاريخ آخر مبيع</th>
+                <th>الرصيد</th>
+                <th>ملاحظة</th>
+              </tr>
+            </thead>
+            <tbody>${bodyHtml}</tbody>
+          </table>
+        ${noteRowHtml(item, 'bottom')}
       </div>`;
       }
 
@@ -963,7 +1048,7 @@ const EXCLUDED_INPUT_BRANCHES = ['Store BR', 'Main Branch','ادارة سلطن�
         const flatRows = buildFlatRowsForItem(item);
         let isFirstOfItem = true;
         for (const r of flatRows) {
-                    lines.push([
+          lines.push([
             '',
             isFirstOfItem ? item.code : '',
             r.branch,
@@ -1012,6 +1097,39 @@ const EXCLUDED_INPUT_BRANCHES = ['Store BR', 'Main Branch','ادارة سلطن�
         renderTable(); // إعادة رسم الجدول لإظهار الصورة الجديدة
       };
       reader.readAsDataURL(file);
+    });
+    // ── سطرا الملاحظة (أعلى الترويسة وأسفل المجاميع) ───────────
+    document.getElementById('flatTableWrap').addEventListener('input', (e) => {
+      const el = e.target.closest('.note-text');
+      if (!el) return;
+      const note = getNote(el.dataset.code, el.dataset.pos);
+      note.text = el.textContent;
+    });
+
+    document.getElementById('flatTableWrap').addEventListener('click', (e) => {
+      const dot = e.target.closest('.color-dot');
+      if (!dot) return;
+      pendingNoteTarget = { code: dot.dataset.code, pos: dot.dataset.pos };
+      const note = getNote(pendingNoteTarget.code, pendingNoteTarget.pos);
+      const colorInput = document.getElementById('noteColorInput');
+      colorInput.value = note.color;
+      colorInput.click();
+    });
+
+    document.getElementById('noteColorInput').addEventListener('input', (e) => {
+      if (!pendingNoteTarget) return;
+      const note = getNote(pendingNoteTarget.code, pendingNoteTarget.pos);
+      note.color = e.target.value;
+
+      const row = document.querySelector(
+        `.note-row[data-code="${pendingNoteTarget.code}"][data-pos="${pendingNoteTarget.pos}"]`
+      );
+      if (row) row.style.background = note.color;
+
+      const dot = document.querySelector(
+        `.color-dot[data-code="${pendingNoteTarget.code}"][data-pos="${pendingNoteTarget.pos}"]`
+      );
+      if (dot) dot.style.background = note.color;
     });
   </script>
 </body>
