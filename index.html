@@ -10,527 +10,71 @@
   <script src="branchAnalyzers.js"></script>
   <script src="analyzeItem.js"></script>
   <script src="analyzeData.js"></script>
+  <!-- مكتبتا تصدير PDF (تعملان بالكامل من المتصفح، بدون أي سيرفر) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <link rel="stylesheet" href="style.css">
   <style>
-    * {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
+    /* ══════════════════════════════════════════════════════════════════
+       وضع تصدير PDF — يُفعَّل مؤقتاً أثناء التقاط التقرير فقط
+       (يُضاف صنف pdf-export-mode على body، ويُزال بعد انتهاء التصدير)
+       ══════════════════════════════════════════════════════════════════ */
+    body.pdf-export-mode #cardInput,
+    body.pdf-export-mode h1,
+    body.pdf-export-mode .pipeline,
+    body.pdf-export-mode .divider,
+    body.pdf-export-mode .stats,
+    body.pdf-export-mode .item-tabs,
+    body.pdf-export-mode .view-bar,
+    body.pdf-export-mode .export-bar {
+      display: none !important;
     }
 
-    body {
-      font-family: 'Segoe UI', Tahoma, sans-serif;
-      background: #f0f2f5;
-      color: #1a1a1a;
-      padding: 32px 24px;
+    body.pdf-export-mode #resultSection {
+      display: block !important;
     }
 
-    h1 {
-      font-size: 1.4rem;
-      margin-bottom: 24px;
-      color: #2d2d2d;
+    body.pdf-export-mode #viewCards,
+    body.pdf-export-mode #viewJson {
+      display: none !important;
     }
 
-    .card {
-      background: white;
-      border-radius: 12px;
-      padding: 24px;
-      margin-bottom: 20px;
-      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+    body.pdf-export-mode #viewTable {
+      display: block !important;
     }
 
-    label {
-      display: block;
-      font-size: 0.85rem;
-      font-weight: 600;
-      color: #555;
-      margin-bottom: 8px;
+    /* أثناء التصدير: لا داعي لمظهر "قابل للتحرير" على سطر الملاحظة */
+    body.pdf-export-mode .note-text {
+      cursor: default;
     }
 
-    textarea {
-      width: 100%;
-      height: 160px;
-      border: 1.5px solid #ddd;
-      border-radius: 8px;
-      padding: 12px;
-      font-size: 0.82rem;
-      font-family: monospace;
-      resize: vertical;
-      direction: ltr;
-      transition: border-color 0.2s;
+    body.pdf-export-mode #flatTableWrap {
+      background: #ffffff;
     }
 
-    textarea:focus {
-      outline: none;
-      border-color: #4f46e5;
+    /* المشكلة: الجدول أعرض من الحاوية فيظهر بشريط تمرير أفقي، فتُقتَطع الأعمدة
+       الأخيرة عند الالتقاط. نُلغي أي تمرير/تحديد عرض وقت التصدير فقط، لنسمح
+       للتقرير أن يظهر بعرضه الطبيعي الكامل، ونبني حجم صفحة PDF مطابق لهذا العرض. */
+    body.pdf-export-mode #cardOutput {
+      overflow: visible !important;
+      max-width: none !important;
+      width: max-content !important;
     }
 
-    .actions {
-      display: flex;
-      gap: 10px;
-      margin-top: 14px;
+    body.pdf-export-mode #flatTableWrap {
+      overflow: visible !important;
+      width: max-content !important;
+      max-width: none !important;
     }
 
-    button {
-      padding: 9px 22px;
-      border: none;
-      border-radius: 8px;
-      font-size: 0.88rem;
-      font-weight: 600;
-      cursor: pointer;
-      transition: opacity 0.15s;
+    body.pdf-export-mode .item-table-wrap {
+      overflow: visible !important;
+      width: max-content !important;
+      max-width: none !important;
     }
 
-    button:hover {
-      opacity: 0.85;
-    }
-
-    #btnRun {
-      background: #4f46e5;
-      color: white;
-    }
-
-    #btnClear {
-      background: #e5e7eb;
-      color: #444;
-    }
-
-    /* ── Pipeline steps ── */
-    .pipeline {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      flex-wrap: wrap;
-      margin-bottom: 20px;
-      font-size: 0.8rem;
-    }
-
-    .step {
-      padding: 5px 14px;
-      border-radius: 20px;
-      background: #e5e7eb;
-      color: #666;
-      font-weight: 600;
-      transition: all 0.3s;
-    }
-
-    .step.done {
-      background: #d1fae5;
-      color: #065f46;
-    }
-
-    .step.active {
-      background: #4f46e5;
-      color: white;
-    }
-
-    .step.error {
-      background: #fee2e2;
-      color: #991b1b;
-    }
-
-    .arrow {
-      color: #aaa;
-      font-size: 0.9rem;
-    }
-
-    /* ── Stats ── */
-    .stats {
-      display: flex;
-      gap: 12px;
-      flex-wrap: wrap;
-      margin-bottom: 20px;
-    }
-
-    .stat {
-      background: #f5f3ff;
-      border: 1px solid #ddd6fe;
-      border-radius: 8px;
-      padding: 10px 18px;
-      font-size: 0.85rem;
-    }
-
-    .stat span {
-      font-weight: 700;
-      color: #4f46e5;
-      margin-inline-start: 4px;
-    }
-
-    /* ── Item tabs ── */
-    .item-tabs {
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-      margin-bottom: 16px;
-    }
-
-    .item-tab {
-      padding: 6px 18px;
-      border-radius: 20px;
-      border: 1.5px solid #ddd;
-      background: white;
-      font-size: 0.83rem;
-      cursor: pointer;
-      font-weight: 600;
-      color: #555;
-      transition: all 0.15s;
-    }
-
-    .item-tab.active {
-      background: #4f46e5;
-      color: white;
-      border-color: #4f46e5;
-    }
-
-    /* ── Branch cards ── */
-    .branches-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-      gap: 16px;
-    }
-
-    .branch-card {
-      border: 1.5px solid #e5e7eb;
-      border-radius: 10px;
-      overflow: hidden;
-    }
-
-    .branch-header {
-      background: #4f46e5;
-      color: white;
-      padding: 10px 16px;
-      font-weight: 700;
-      font-size: 0.88rem;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-    }
-
-    .branch-header .badge {
-      background: rgba(255, 255, 255, 0.2);
-      border-radius: 12px;
-      padding: 2px 10px;
-      font-size: 0.75rem;
-    }
-
-    .branch-body {
-      padding: 14px 16px;
-    }
-
-    .meta-row {
-      display: flex;
-      gap: 16px;
-      margin-bottom: 12px;
-    }
-
-    .meta-item {
-      font-size: 0.82rem;
-      color: #555;
-    }
-
-    .meta-item strong {
-      display: block;
-      color: #1a1a1a;
-      font-size: 0.88rem;
-    }
-
-    .sales-title {
-      font-size: 0.78rem;
-      font-weight: 700;
-      color: #888;
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
-      margin-bottom: 8px;
-      margin-top: 4px;
-    }
-
-    .sales-table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 0.78rem;
-      direction: ltr;
-    }
-
-    .sales-table th {
-      background: #f3f4f6;
-      padding: 6px 10px;
-      text-align: left;
-      font-weight: 600;
-      color: #555;
-    }
-
-    .sales-table td {
-      padding: 6px 10px;
-      border-bottom: 1px solid #f0f0f0;
-    }
-
-    .sales-table tr:last-child td {
-      border-bottom: none;
-    }
-
-    .no-sales {
-      font-size: 0.8rem;
-      color: #bbb;
-      font-style: italic;
-    }
-
-    /* ── View toggle (cards / json) ── */
-    .view-bar {
-      display: flex;
-      gap: 8px;
-      margin-bottom: 16px;
-    }
-
-    .view-btn {
-      padding: 6px 16px;
-      border-radius: 8px;
-      border: 1.5px solid #ddd;
-      background: white;
-      font-size: 0.82rem;
-      cursor: pointer;
-      font-weight: 600;
-      color: #555;
-    }
-
-    .view-btn.active {
-      background: #4f46e5;
-      color: white;
-      border-color: #4f46e5;
-    }
-
-    pre#jsonOut {
-      background: #1e1e2e;
-      color: #cdd6f4;
-      border-radius: 8px;
-      padding: 16px;
-      font-family: monospace;
-      font-size: 0.78rem;
-      max-height: 500px;
-      overflow-y: auto;
-      white-space: pre;
-      direction: ltr;
-    }
-
-    #placeholder {
-      text-align: center;
-      color: #aaa;
-      padding: 40px;
-      font-size: 0.9rem;
-    }
-
-    .error-box {
-      background: #fef2f2;
-      border: 1px solid #fecaca;
-      color: #b91c1c;
-      border-radius: 8px;
-      padding: 12px 16px;
-      font-size: 0.85rem;
-      margin-bottom: 16px;
-    }
-
-    .divider {
-      height: 1px;
-      background: #e5e7eb;
-      margin: 16px 0;
-    }
-
-    /* balance color */
-    .bal-pos {
-      color: #059669;
-      font-weight: 700;
-    }
-
-    .bal-zero {
-      color: #dc2626;
-      font-weight: 700;
-    }
-
-    /* ── Table view ── */
-    #viewTable {
-      overflow-x: auto;
-    }
-
-    .export-bar {
-      display: flex;
-      gap: 8px;
-      margin-bottom: 12px;
-      align-items: center;
-    }
-
-    .btn-export {
-      padding: 7px 18px;
-      background: #16a34a;
-      color: white;
-      border: none;
-      border-radius: 8px;
-      font-size: 0.84rem;
-      font-weight: 600;
-      cursor: pointer;
-      transition: opacity 0.15s;
-    }
-
-    .btn-export:hover {
-      opacity: 0.85;
-    }
-
-    .flat-table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 0.82rem;
-      direction: rtl;
-    }
-
-    .flat-table th {
-      background: #4f46e5;
-      color: white;
-      padding: 8px 12px;
-      text-align: right;
-      font-weight: 600;
-      white-space: nowrap;
-    }
-
-    .flat-table td {
-      padding: 7px 12px;
-      border-bottom: 1px solid #e5e7eb;
-      white-space: nowrap;
-    }
-
-    .flat-table tr:hover td {
-      background: #f5f3ff;
-    }
-
-    .flat-table .code-cell {
-      font-weight: 700;
-      color: #4f46e5;
-    }
-
-    .flat-table .bal-pos {
-      color: #059669;
-      font-weight: 700;
-    }
-
-    .flat-table .bal-zero {
-      color: #dc2626;
-      font-weight: 700;
-    }
-
-    .flat-table .item-sep td {
-      border-top: 2px solid #c7d2fe;
-    }
-
-    .flat-table .totals-row td {
-      font-weight: 700;
-      background: #f5f3ff;
-      border-top: 2px solid #ddd6fe;
-      color: #4f46e5;
-    }
-
-    .item-table-wrap {
-      margin-bottom: 28px;
-    }
-
-    .item-table-title {
-      font-size: 1rem;
-      font-weight: 700;
-      color: #4f46e5;
-      background: #eef2ff;
-      border-right: 4px solid #4f46e5;
-      padding: 7px 14px;
-      margin-bottom: 0;
-      border-radius: 6px 6px 0 0;
-    }
-
-    .img-cell {
-      text-align: center;
-      vertical-align: middle;
-      width: 140px;
-      min-width: 140px;
-      cursor: pointer;
-    }
-
-    .img-placeholder {
-      width: 250px;
-      height: 250px;
-      min-width: 250px;
-      min-height: 250px;
-      border: 2px dashed #d1d5db;
-      border-radius: 8px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      color: #9ca3af;
-      font-size: 2.4rem;
-      cursor: pointer;
-      margin: auto;
-      transition: border-color 0.15s, color 0.15s;
-    }
-
-    .img-placeholder:hover {
-      border-color: #4f46e5;
-      color: #4f46e5;
-    }
-
-    .item-img {
-      width: 250px;
-      height: 250px;
-      min-width: 250px;
-      min-height: 250px;
-      object-fit: contain;
-      border-radius: 8px;
-      display: block;
-      margin: auto;
-      border: 1.5px solid #e5e7eb;
-    }
-
-    .note-row {
-      position: relative;
-      display: flex;
-      align-items: center;
-      min-height: 44px;
-      padding: 8px 14px 8px 44px;
-      border: 1.5px solid #e5e7eb;
-      font-size: 0.85rem;
-      color: #333;
-    }
-
-    .note-top {
-      border-radius: 8px 8px 0 0;
-      border-bottom: none;
-    }
-
-    .note-bottom {
-      border-radius: 0 0 8px 8px;
-      border-top: none;
-    }
-
-    .color-dot {
-      position: absolute;
-      left: 12px;
-      top: 50%;
-      transform: translateY(-50%);
-      width: 22px;
-      height: 22px;
-      border-radius: 50%;
-      border: 2px solid #d1d5db;
-      cursor: pointer;
-      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
-      flex-shrink: 0;
-    }
-
-    .color-dot:hover {
-      border-color: #4f46e5;
-    }
-
-    .note-text {
-      flex: 1;
-      outline: none;
-      min-height: 20px;
-      line-height: 1.4;
-      text-align: center;
-    }
-
-    .note-text:empty:before {
-      content: attr(data-placeholder);
-      color: #b0b0b0;
+    body.pdf-export-mode .flat-table {
+      width: auto !important;
     }
   </style>
 </head>
@@ -540,7 +84,7 @@
   <h1>🔬 تجربة دوال التحليل الكاملة</h1>
 
   <!-- Input -->
-  <div class="card">
+  <div class="card" id="cardInput">
     <label>الصق هنا النص المنسوخ من Excel</label>
     <textarea id="inputText" placeholder="انسخ الجدول من Excel ثم الصقه هنا..."></textarea>
     <div class="actions">
@@ -550,7 +94,7 @@
   </div>
 
   <!-- Output -->
-  <div class="card">
+  <div class="card" id="cardOutput">
 
     <!-- Pipeline indicator -->
     <div class="pipeline">
@@ -593,6 +137,7 @@
       <div id="viewTable" style="display:none">
         <div class="export-bar">
           <button class="btn-export" id="btnExcel">⬇ تحميل Excel</button>
+          <button class="btn-export" id="btnPdf">🖨️ تصدير PDF</button>
         </div>
         <div id="flatTableWrap"></div>
       </div>
@@ -1132,6 +677,9 @@
       if (dot) dot.style.background = note.color;
     });
   </script>
+
+  <!-- منطق تصدير PDF (مستقل في ملف خاص) -->
+  <script src="pdfExport.js"></script>
 </body>
 
 </html>
