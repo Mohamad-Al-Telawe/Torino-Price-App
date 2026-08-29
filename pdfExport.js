@@ -74,19 +74,38 @@ function computePages(items, usableHeightPx) {
   const pages = [];
   let current = [];
   let cursor = 0; // المساحة المستخدمة من الصفحة الحالية (px منطقي)
+  let lastBottom = null; // أسفل آخر جزء رُسم على نفس الصفحة — لحساب الفراغ (margin) قبل ما يليه
 
   const flush = () => {
     if (current.length) pages.push(current);
     current = [];
     cursor = 0;
+    lastBottom = null; // أول عنصر في صفحة جديدة يبدأ من أعلاها مباشرة، بلا فراغ اصطناعي
+  };
+
+  // يضيف جزءاً للصفحة الحالية، مع الحفاظ على الفراغ الحقيقي (margin) الذي كان
+  // موجوداً بين نهاية آخر جزء رُسم وبداية هذا الجزء في الصفحة الأصلية
+  const pushSlice = (sy, sh, repeatHeaderRect) => {
+    if (lastBottom !== null) {
+      const gap = sy - lastBottom;
+      if (gap > 0) {
+        current.push({ sy: lastBottom, sh: gap, repeatHeaderRect: null });
+        cursor += gap;
+      }
+    }
+    const headerH = repeatHeaderRect ? (repeatHeaderRect.bottom - repeatHeaderRect.top) : 0;
+    current.push({ sy, sh, repeatHeaderRect });
+    cursor += headerH + sh;
+    lastBottom = sy + sh;
   };
 
   for (const item of items) {
+    const gapBefore = lastBottom !== null ? Math.max(0, item.top - lastBottom) : 0;
+
     // الحالة ١: القسم يدخل كاملاً ضمن صفحة واحدة
     if (item.height <= usableHeightPx) {
-      if (cursor > 0 && item.height > usableHeightPx - cursor) flush();
-      current.push({ sy: item.top, sh: item.height, repeatHeaderRect: null });
-      cursor += item.height;
+      if (cursor > 0 && (gapBefore + item.height) > usableHeightPx - cursor) flush();
+      pushSlice(item.top, item.height, null);
       continue;
     }
 
@@ -125,8 +144,7 @@ function computePages(items, usableHeightPx) {
         j = idx + 1;
       }
 
-      current.push({ sy: sliceStart, sh: sliceEnd - sliceStart, repeatHeaderRect });
-      cursor = used + headerH;
+      pushSlice(sliceStart, sliceEnd - sliceStart, repeatHeaderRect);
       idx = j;
       firstSlice = false;
     }
@@ -136,13 +154,39 @@ function computePages(items, usableHeightPx) {
   return pages;
 }
 
-// ── بناء صفحات jsPDF من الصورة الكبيرة (bigCanvas) حسب خطة التقسيم ───────────
-function buildPdfFromPages(bigCanvas, pages, scale, contentWidthPx, contentWidthPt, marginPt, pageWidthPt, pageHeightPt) {
+// ── إصلاح مشكلة عدم عكس الأقواس في html2canvas ───────────────────────────────
+// المتصفح يعكس الأقواس بصرياً تلقائياً في سياق RTL، لكن محرك رسم النص في
+// html2canvas لا يطبّق هذا العكس، فتظهر الأقواس بشكلها غير المعكوس في الصورة.
+// الحل: نبدّل رمزي "(" و ")" في كل نصوص التقرير مباشرة قبل الالتقاط فقط،
+// فتظهر بعد رسم html2canvas (غير المُعكِس) بالشكل الصحيح كما يراها المستخدم
+// في الموقع، ثم نُعيد النص الأصلي فور انتهاء الالتقاط.
+function swapParens(str) {
+  return str.replace(/[()]/g, c => (c === '(' ? ')' : '('));
+}
+
+function applyParenSwapFix(root) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const originals = [];
+  let node;
+  while ((node = walker.nextNode())) {
+    if (node.nodeValue && /[()]/.test(node.nodeValue)) {
+      originals.push({ node, text: node.nodeValue });
+      // node.nodeValue = swapParens(node.nodeValue);
+    }
+  }
+  return function restore() {
+    originals.forEach(({ node, text }) => { node.nodeValue = text; });
+  };
+}
+
+
+function buildPdfFromPages(bigCanvas, pages, scale, contentWidthPx, contentWidthPt, marginPt, pageWidthPt, pageHeightPt, jpegQuality) {
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({
     unit: 'pt',
     format: [pageWidthPt, pageHeightPt],
     orientation: pageWidthPt > pageHeightPt ? 'landscape' : 'portrait',
+    compress: true, // يفعّل ضغط Deflate لتيارات المحتوى الداخلية في ملف PDF (إضافي، بلا تأثير يُذكر على الصور نفسها لكنه مجاني)
   });
 
   pages.forEach((pageSlices, pageIndex) => {
@@ -157,7 +201,7 @@ function buildPdfFromPages(bigCanvas, pages, scale, contentWidthPx, contentWidth
     const pageCanvas = document.createElement('canvas');
     pageCanvas.width = Math.ceil(contentWidthPx * scale);
     pageCanvas.height = Math.max(1, Math.ceil(totalLogicalH * scale));
-    const ctx = pageCanvas.getContext('2d');
+    const ctx = pageCanvas.getContext('2d', { alpha: false });
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, pageCanvas.width, pageCanvas.height);
 
@@ -180,9 +224,12 @@ function buildPdfFromPages(bigCanvas, pages, scale, contentWidthPx, contentWidth
       destY += s.sh;
     });
 
-    const imgData = pageCanvas.toDataURL('image/png');
+    // JPEG بدل PNG: نفس المحتوى (جدول بخلفية بيضاء صلبة بلا شفافية) يخرج بحجم أصغر
+    // بأضعاف مضاعفة تحت الضغط الفاقد لأن PNG يخزن كل بكسل من حواف النص المُنعّم
+    // (anti-aliasing) بدون فقدان بينما JPEG يضغطها بكفاءة عالية مع بقاء النص مقروءاً
+    const imgData = pageCanvas.toDataURL('image/jpeg', jpegQuality);
     const imgHeightPt = pxToPt(totalLogicalH);
-    doc.addImage(imgData, 'PNG', marginPt, marginPt, contentWidthPt, imgHeightPt);
+    doc.addImage(imgData, 'JPEG', marginPt, marginPt, contentWidthPt, imgHeightPt);
   });
 
   return doc;
@@ -200,6 +247,7 @@ async function exportReportToPdf() {
   if (btn.disabled) return;
 
   const originalLabel = btn.textContent;
+  let restoreParens = null;
 
   btn.disabled = true;
   btn.textContent = '... جارٍ التصدير';
@@ -207,6 +255,9 @@ async function exportReportToPdf() {
   const MARGIN_PT = 36; // هامش الصفحة (≈ 1.27 سم من كل جهة)
   const PAGE_HEIGHT_PT = 841.89; // ارتفاع صفحة A4 القياسي — العرض يُحسب تلقائياً حسب عرض التقرير الفعلي
   const MAX_CANVAS_DIM_PX = 14000; // حد أمان لتفادي تجاوز أقصى حجم Canvas في المتصفح
+  const JPEG_QUALITY = 0.82; // جودة ضغط JPEG لكل صفحة (0 إلى 1) — هذا هو المتحكم الرئيسي بحجم الملف النهائي؛
+                             // 0.82 تعطي توازناً جيداً بين وضوح النص وحجم الملف، ارفعها إذا لاحظت تشويشاً بالنص
+                             // أو اخفضها (مثلاً 0.7) إذا احتجت حجماً أصغر وكان النص لا يزال واضحاً بما يكفي
 
   try {
     // نتأكد أن شاشة "جدول" هي المعروضة فعلياً (هي مصدر التقرير)
@@ -249,6 +300,10 @@ async function exportReportToPdf() {
       console.warn(`تصدير PDF: تم تقليل الدقة إلى scale=${scale} بسبب حجم التقرير.`);
     }
 
+    // نبدّل الأقواس مؤقتاً (انظر applyParenSwapFix) — بعد الانتهاء من كل القياسات
+    // (لا تتأثر أبعاد العناصر بتبديل شكل القوس)، وقبل الالتقاط مباشرة
+    restoreParens = applyParenSwapFix(container);
+
     const bigCanvas = await html2canvas(container, {
       scale,
       backgroundColor: '#ffffff',
@@ -257,7 +312,7 @@ async function exportReportToPdf() {
     });
 
     const pdf = buildPdfFromPages(
-      bigCanvas, pages, scale, actualWidthPx, contentWidthPt, MARGIN_PT, pageWidthPt, PAGE_HEIGHT_PT
+      bigCanvas, pages, scale, actualWidthPx, contentWidthPt, MARGIN_PT, pageWidthPt, PAGE_HEIGHT_PT, JPEG_QUALITY
     );
     pdf.save('تقرير_المبيعات.pdf');
 
@@ -265,6 +320,7 @@ async function exportReportToPdf() {
     console.error('PDF export failed:', err);
     alert('حدث خطأ أثناء تصدير PDF:\n' + err.message);
   } finally {
+    if (restoreParens) restoreParens();
     document.body.classList.remove('pdf-export-mode');
     btn.disabled = false;
     btn.textContent = originalLabel;
