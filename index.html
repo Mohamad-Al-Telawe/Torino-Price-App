@@ -13,6 +13,8 @@
   <!-- مكتبتا تصدير PDF (تعملان بالكامل من المتصفح، بدون أي سيرفر) -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <!-- مكتبة تصدير Excel (ملف xlsx حقيقي يدعم تضمين الصور، تعمل بالكامل من المتصفح) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
   <link rel="stylesheet" href="style.css">
   <style>
     /* ══════════════════════════════════════════════════════════════════
@@ -564,61 +566,180 @@
 
       document.getElementById('flatTableWrap').innerHTML = html;
     }
-    // ── تحميل Excel ───────────────────────────────────────────────
-    function exportToExcel() {
-      const BOM = '\uFEFF';
-      const headers = ['صورة المادة', 'المادة', 'الفرع', 'كمية الإدخال',
-        'عدد المبيعات بهذا السعر', 'سعر المبيع',
-        'تاريخ أول دخول', 'تاريخ آخر مبيع', 'الرصيد', 'ملاحظة'];
+    // ── تحميل Excel (ملف xlsx حقيقي، يتضمن صورة كل مادة داخل عمودها) ────────
+    const IMG_CELL_SIZE_PX = 70; // الحجم المعروض للصورة داخل الخلية (بلا تمديد)
 
-      const escape = v => {
-        const s = String(v ?? '');
-        return s.includes(',') || s.includes('"') || s.includes('\n')
-          ? `"${s.replace(/"/g, '""')}"` : s;
-      };
+    // ExcelJS يدعم تضمين png / jpeg / gif فقط. أي صيغة أخرى (مثل webp) نحوّلها
+    // تلقائياً إلى png عبر canvas قبل التضمين حتى تظهر بشكل سليم في الملف.
+    function loadImageEl(src) {
+      return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = reject;
+        img.src = src;
+      });
+    }
 
-      const lines = [];
+    async function toExcelImageData(dataUrl) {
+      if (!dataUrl) return null;
+      const match = /^data:image\/(\w+);base64,/.exec(dataUrl);
+      let ext = match ? match[1].toLowerCase() : '';
+      if (ext === 'jpg') ext = 'jpeg';
 
-      for (let i = 0; i < analysisResult.length; i++) {
-        const item = analysisResult[i];
-
-        // سطر فارغ بين المواد (ليس قبل الأولى)
-        if (i > 0) lines.push('');
-
-        // اسم المادة في الخلية الأولى وحدها
-        lines.push(escape(item.code));
-
-        // ترويسة الأعمدة
-        lines.push(headers.map(escape).join(','));
-
-        // صفوف المادة
-        const flatRows = buildFlatRowsForItem(item);
-        let isFirstOfItem = true;
-        for (const r of flatRows) {
-          lines.push([
-            '',
-            isFirstOfItem ? item.code : '',
-            r.branch,
-            r._isFirstOfBranch ? r.inputQuantity : '',
-            r.numSales,
-            r.price,
-            r.firstInput,
-            r.dateLastSale,
-            r._hasBalance ? r.balance : '',
-            r._isFirstOfBranch ? (r.notes ?? '') : '',
-          ].map(escape).join(','));
-          isFirstOfItem = false;
-        }
+      if (['png', 'jpeg', 'gif'].includes(ext)) {
+        return { base64: dataUrl.split(',')[1], extension: ext };
       }
 
-      const csv = BOM + lines.join('\r\n');
-      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'تحليل_المبيعات.csv';
-      a.click();
-      URL.revokeObjectURL(url);
+      const img = await loadImageEl(dataUrl);
+      const canvas = document.createElement('canvas');
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      canvas.getContext('2d').drawImage(img, 0, 0);
+      return { base64: canvas.toDataURL('image/png').split(',')[1], extension: 'png' };
+    }
+
+    async function exportToExcel() {
+      const btn = document.getElementById('btnExcel');
+      const originalLabel = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = '... جارٍ التصدير';
+
+      try {
+        const workbook = new ExcelJS.Workbook();
+        const sheet = workbook.addWorksheet('تحليل المبيعات', {
+          views: [{ rightToLeft: true }],
+        });
+
+        const headers = ['صورة المادة', 'المادة', 'الفرع', 'كمية الإدخال',
+          'عدد المبيعات بهذا السعر', 'سعر المبيع',
+          'تاريخ أول دخول', 'تاريخ آخر مبيع', 'الرصيد', 'ملاحظة'];
+
+        sheet.columns = [
+          { width: 12 }, { width: 16 }, { width: 18 }, { width: 12 },
+          { width: 18 }, { width: 12 }, { width: 14 }, { width: 14 },
+          { width: 10 }, { width: 24 },
+        ];
+
+        for (let i = 0; i < analysisResult.length; i++) {
+          const item = analysisResult[i];
+
+          // سطر فارغ بين المواد (ليس قبل الأولى)
+          if (i > 0) sheet.addRow([]);
+
+          // اسم المادة في الخلية الأولى وحدها
+          const titleRow = sheet.addRow([item.code]);
+          titleRow.font = { bold: true };
+
+          // ترويسة الأعمدة
+          const headerRow = sheet.addRow(headers);
+          headerRow.font = { bold: true };
+          headerRow.eachCell(cell => {
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8E8E8' } };
+            cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+          });
+
+          // صفوف المادة
+          const flatRows = buildFlatRowsForItem(item);
+          const itemRowCount = flatRows.length;
+
+          const totalBalance = item.branches.reduce((sum, b) => sum + (b.balance ?? 0), 0);
+          const totalInputQty = item.branches
+            .filter(b => !EXCLUDED_INPUT_BRANCHES.includes(b.nameBranch))
+            .reduce((sum, b) =>
+              sum + (b.inputRows ?? []).reduce((s, r) => s + (r.inputQuantity ?? 0), 0), 0);
+          const totalSalesQty = item.branches.reduce((sum, b) => sum + (b.totalSales ?? 0), 0);
+
+          let isFirstOfItem = true;
+          let branchStartRow = null;
+          let firstDataRowNumber = null;
+          let lastDataRowNumber = null;
+
+          for (const r of flatRows) {
+            const row = sheet.addRow([
+              '', // عمود الصورة — يُملأ كصورة مضمّنة بعد إتمام كل صفوف المادة
+              isFirstOfItem ? item.code : '',
+              r.branch,
+              r._isFirstOfBranch ? r.inputQuantity : '',
+              r.numSales,
+              r.price,
+              r.firstInput,
+              r.dateLastSale,
+              r._hasBalance ? r.balance : '',
+              r._isFirstOfBranch ? (r.notes ?? '') : '',
+            ]);
+            row.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+
+            if (firstDataRowNumber === null) firstDataRowNumber = row.number;
+            lastDataRowNumber = row.number;
+
+            if (r._isFirstOfBranch) branchStartRow = row.number;
+            if (r._branchRowCount > 1) {
+              const branchEndRow = branchStartRow + r._branchRowCount - 1;
+              ['C', 'D', 'I', 'J'].forEach(col => {
+                sheet.mergeCells(`${col}${branchStartRow}:${col}${branchEndRow}`);
+              });
+            }
+
+            isFirstOfItem = false;
+          }
+
+          // دمج عمودي الصورة والمادة على طول كل صفوف المادة (مثل rowspan في الموقع)
+          if (itemRowCount > 1) {
+            sheet.mergeCells(`A${firstDataRowNumber}:A${lastDataRowNumber}`);
+            sheet.mergeCells(`B${firstDataRowNumber}:B${lastDataRowNumber}`);
+          }
+
+          // تضمين صورة المادة (إن وُجدت) داخل الخلية المدموجة
+          try {
+            const imgData = await toExcelImageData(itemImages[item.code]);
+            if (imgData) {
+              const imageId = workbook.addImage(imgData);
+              sheet.addImage(imageId, {
+                tl: { col: 0, row: firstDataRowNumber - 1 },
+                ext: { width: IMG_CELL_SIZE_PX, height: IMG_CELL_SIZE_PX },
+              });
+
+              // إن كانت صفوف المادة قليلة، نرفع ارتفاعها لتتّسع للصورة بلا تمديد
+              const DEFAULT_ROW_PX = 20;
+              if (itemRowCount * DEFAULT_ROW_PX < IMG_CELL_SIZE_PX) {
+                const neededPerRowPt = (IMG_CELL_SIZE_PX / itemRowCount) * 0.75; // px → pt
+                for (let rn = firstDataRowNumber; rn <= lastDataRowNumber; rn++) {
+                  sheet.getRow(rn).height = neededPerRowPt;
+                }
+              }
+            }
+          } catch (imgErr) {
+            console.warn('تعذّر تضمين صورة المادة', item.code, imgErr);
+          }
+
+          // صف المجموع
+          const totalsRow = sheet.addRow(['المجموع', '', '', totalInputQty, totalSalesQty, '', '', '', totalBalance, '']);
+          totalsRow.font = { bold: true };
+          totalsRow.eachCell(cell => {
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF3F3F3' } };
+            cell.alignment = { horizontal: 'center', vertical: 'middle' };
+          });
+          sheet.mergeCells(`A${totalsRow.number}:C${totalsRow.number}`);
+        }
+
+        const buffer = await workbook.xlsx.writeBuffer();
+        const blob = new Blob([buffer], {
+          type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'تحليل_المبيعات.xlsx';
+        a.click();
+        URL.revokeObjectURL(url);
+
+      } catch (err) {
+        console.error('Excel export failed:', err);
+        alert('حدث خطأ أثناء تصدير Excel:\n' + err.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = originalLabel;
+      }
     }
 
     document.getElementById('btnExcel').addEventListener('click', exportToExcel);
